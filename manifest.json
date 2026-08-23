@@ -2,8 +2,8 @@
   "name": "FM Tracker",
   "short_name": "FM Tracker",
   "display": "standalone",
-  "theme_color": "#0f4cff",
-  "background_color": "#0f4cff",
+  "theme_color": "#ffffff",
+  "background_color": "#ffffff",
   "icons": [
     {
       "src": "icon-192.png",
