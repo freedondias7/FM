@@ -1,1 +1,19 @@
-{"name":"F&M Tracker","short_name":"F&M","start_url":"./","display":"standalone","background_color":"#ffffff","theme_color":"#356f73","icons":[]}
+{
+  "name": "FM Tracker",
+  "short_name": "FM Tracker",
+  "display": "standalone",
+  "theme_color": "#0f4cff",
+  "background_color": "#0f4cff",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
