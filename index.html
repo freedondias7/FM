@@ -1408,15 +1408,43 @@ function mergeCloudAndLocal(cloudRows){
   });
 
   /*
+   * Local records that still have a queued, not-yet-confirmed delete
+   * must never be resurrected by a cloud read that hasn't caught up
+   * yet (e.g. the delete op itself failed this round but the
+   * follow-up cloud read still succeeded). The tombstone will land
+   * on a later sync; until then, treat these IDs as deleted locally
+   * too.
+   */
+  const pendingDeleteIds=new Set(
+    getSyncQueue()
+      .filter(op=>op.action==='delete')
+      .map(op=>transactionKey(op.transactionId))
+      .filter(Boolean)
+  );
+
+  /*
    * Cloud wins for IDs it contains.
    * Tombstones explicitly remove IDs.
    */
   const merged=[];
 
   cloudById.forEach((cloudTx,id)=>{
-    if(!tombstones.has(id)){
-      merged.push(cloudTx);
+    if(tombstones.has(id) || pendingDeleteIds.has(id))return;
+
+    /*
+     * The Sheet has no Receipt column, so cloud rows never carry
+     * receipt images — only the device that attached one has it.
+     * Without this, syncing would wipe the receipt off the very
+     * device that added it. Carry the local receipt forward on this
+     * device only; it still never propagates to other devices,
+     * since it was never uploaded.
+     */
+    const localTx=localById.get(id);
+    if(!cloudTx.receipt && localTx?.receipt){
+      cloudTx=Object.assign({},cloudTx,{receipt:localTx.receipt});
     }
+
+    merged.push(cloudTx);
   });
 
   /*
@@ -1439,6 +1467,7 @@ function mergeCloudAndLocal(cloudRows){
     if(
       !cloudById.has(id) &&
       !tombstones.has(id) &&
+      !pendingDeleteIds.has(id) &&
       pendingUpsertIds.has(id)
     ){
       merged.push(localTx);
@@ -1551,6 +1580,7 @@ async function syncToGoogleSheets(showMessage=true){
      * for the matching read-side rule.
      */
     let syncHadFailures=false;
+    let syncHadConflicts=false;
 
     if(queue.length){
 
@@ -1562,22 +1592,34 @@ async function syncToGoogleSheets(showMessage=true){
           result=await googlePostOperation(op);
         }catch(err){
           /*
-           * Leave this op queued and keep going with the rest of the
-           * queue. We'll report the failure after the loop.
+           * A real failure to reach Apps Script (network drop, HTTP
+           * error, thrown exception). Leave this op queued so it
+           * retries on the next sync. We'll report the failure after
+           * the loop.
            */
           syncHadFailures=true;
           continue;
         }
 
         /*
-         * For deletes, only treat the operation as synced if Apps
-         * Script actually confirms the tombstone was written. A
-         * success:true envelope alone is not enough — we need
-         * deleted===true before we drop it from the queue.
+         * Apps Script responded successfully, but for upsert/delete
+         * it also runs a last-write-wins staleness check (comparing
+         * Updated At) and can legitimately DECLINE the change —
+         * returning success:true with updated:false / deleted:false.
+         * That is a resolved outcome, not a transient error: the
+         * timestamps involved never change, so retrying it will
+         * never succeed. Requeuing it would just spin forever and
+         * show "Failed" permanently for no reason. So we dequeue it
+         * either way, but flag it as a conflict (this device's change
+         * lost to a newer change already on the Sheet) rather than a
+         * failure, so the next cloud read's — already-newer — version
+         * wins for that ID.
          */
-        if(op.action==='delete' && result?.deleted!==true){
-          syncHadFailures=true;
-          continue;
+        if(
+          (op.action==='upsert' && result?.updated!==true) ||
+          (op.action==='delete' && result?.deleted!==true)
+        ){
+          syncHadConflicts=true;
         }
 
         /*
@@ -1621,7 +1663,7 @@ async function syncToGoogleSheets(showMessage=true){
 
     if(syncHadFailures){
       throw new Error(
-        "Some changes could not be confirmed by Google Sheets "+
+        "Some changes could not reach Google Sheets "+
         "and remain queued for the next sync."
       );
     }
@@ -1654,7 +1696,9 @@ async function syncToGoogleSheets(showMessage=true){
 
     if(status){
       status.textContent=
-        "Shared data synced";
+        syncHadConflicts
+          ? "Synced — a newer change already on the sheet won a conflict"
+          : "Shared data synced";
     }
 
     if(last){
