@@ -945,8 +945,49 @@ const categories=[['🍽️','Food & Dining'],['🛒','Groceries'],['🏠','Rent
 let state={sharedPool:0,freedonPaid:0,mishelPaid:0,totalVolume:0,transactions:[],notifications:[]};
 let settings={budget:0,dark:false,pin:'',smartCategories:true};
 let statementFilter='all';
+const FM_DEVICE_ID_KEY='fm_tracker_device_id_v1';
+const FM_SYNC_QUEUE_KEY='fm_tracker_sync_queue_v1';
+let fmDeviceId=localStorage.getItem(FM_DEVICE_ID_KEY);
+if(!fmDeviceId){
+  fmDeviceId=(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():('dev-'+Date.now()+'-'+Math.random().toString(36).slice(2,12));
+  localStorage.setItem(FM_DEVICE_ID_KEY,fmDeviceId);
+}
+function newTransactionId(){
+  return (typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID():('tx-'+fmDeviceId+'-'+Date.now()+'-'+Math.random().toString(36).slice(2,10));
+}
+function transactionKey(id){return String(id??'');}
+function recomputeDerivedState(){
+  let deposits=0,expenses=0;
+  state.transactions.forEach(t=>{
+    const amount=Number(t.amount||0);
+    if(t.type==='pool_refill')deposits+=amount;
+    if(t.type==='expense')expenses+=amount;
+  });
+  state.sharedPool=deposits-expenses;
+  state.totalVolume=expenses;
+}
 (function(){const cleanup='fm_shared_space_demo_cleanup_v1';if(!localStorage.getItem(cleanup)){localStorage.removeItem(STORAGE_KEY);localStorage.setItem(cleanup,'done')}})();
-function loadState(){try{const saved=localStorage.getItem(STORAGE_KEY);if(saved)state=Object.assign(state,JSON.parse(saved));const ss=localStorage.getItem(SETTINGS_KEY);if(ss)settings=Object.assign(settings,JSON.parse(ss));}catch(e){} if(!Array.isArray(state.transactions))state.transactions=[];if(!Array.isArray(state.notifications))state.notifications=[];applyTheme();const st=document.getElementById('smart-category-toggle');if(st)st.checked=!!settings.smartCategories;const sn=document.getElementById('smart-category-note');if(sn)sn.textContent=settings.smartCategories?'Suggestions are shown while you type':'Category suggestions are off';renderDOM();}
+function loadState(){
+  try{
+    const saved=localStorage.getItem(STORAGE_KEY);
+    if(saved)state=Object.assign(state,JSON.parse(saved));
+    const ss=localStorage.getItem(SETTINGS_KEY);
+    if(ss)settings=Object.assign(settings,JSON.parse(ss));
+  }catch(e){}
+  if(!Array.isArray(state.transactions))state.transactions=[];
+  if(!Array.isArray(state.notifications))state.notifications=[];
+  let changed=false;
+  state.transactions=state.transactions.map(t=>{
+    if(t.id===undefined||t.id===null||t.id===''){changed=true;return Object.assign({},t,{id:newTransactionId()});}
+    return t;
+  });
+  recomputeDerivedState();
+  if(changed)saveState();
+  applyTheme();
+  const st=document.getElementById('smart-category-toggle');if(st)st.checked=!!settings.smartCategories;
+  const sn=document.getElementById('smart-category-note');if(sn)sn.textContent=settings.smartCategories?'Suggestions are shown while you type':'Category suggestions are off';
+  renderDOM();
+}
 function saveState(){localStorage.setItem(STORAGE_KEY,JSON.stringify(state));localStorage.setItem(SETTINGS_KEY,JSON.stringify(settings));}
 function localDateString(d=new Date()){return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
 function esc(v){return String(v??'').replace(/[<>&"']/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;',"'":'&#39;'}[c]))}
@@ -972,13 +1013,69 @@ function updateCategorySuggestion(){const input=document.getElementById('input-e
 function showManualCategory(){const box=document.getElementById('category-suggestion'),wrap=document.getElementById('manual-category-wrap'),btn=document.getElementById('change-category-btn');if(box){box.dataset.manual='true';box.hidden=true}if(wrap)wrap.style.display='block';if(btn)btn.style.display='none'}
 function toggleSmartCategories(enabled){settings.smartCategories=!!enabled;saveState();const note=document.getElementById('smart-category-note');if(note)note.textContent=enabled?'Suggestions are shown while you type':'Category suggestions are off';updateCategorySuggestion()}
 function quickCategory(label){const g=document.getElementById('group-category');if(g?.tagName==='SELECT'){g.value=label;return}const name=label.replace(/^\S+\s/,'');const target=[...g.querySelectorAll('.category-option')].find(b=>b.innerText.includes(name));if(target)selectToggle(target)}
-function submitAddFunds(){const amt=parseFloat(document.getElementById('input-fund-amount').value);if(!Number.isFinite(amt)||amt<=0)return alert('Enter a valid amount.');const by=getToggleVal('group-fund-payer');state.sharedPool+=amt;state.transactions.unshift({id:Date.now(),type:'pool_refill',description:'Balance Added',amount:amt,payer:by,meta:`${by} added to shared balance`,date:localDateString()});addNotification(`${by} added ${money(amt)} to the shared balance.`,'income');closeModal('modal-add-funds');saveState();queueGoogleSync();renderDOM()}
-async function submitExpense(){const desc=document.getElementById('input-exp-desc').value.trim()||'Expense',amt=parseFloat(document.getElementById('input-exp-amount').value);if(!Number.isFinite(amt)||amt<=0)return alert('Enter a valid amount.');const cat=document.getElementById('group-category').value||categories[categories.length-1][0]+' '+categories[categories.length-1][1],payer=getToggleVal('group-exp-payer'),note=document.getElementById('input-exp-note').value.trim(),recurring=document.getElementById('input-exp-recurring').checked,frequency=document.getElementById('recurring-frequency').value;let receipt='';const file=document.getElementById('input-exp-receipt').files?.[0];if(file){if(file.size>2*1024*1024)return alert('Receipt image must be smaller than 2 MB.');receipt=await new Promise(resolve=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>resolve('');r.readAsDataURL(file)})}const tx={id:Date.now(),type:'expense',description:desc,amount:amt,category:cat,payer,date:document.getElementById('input-exp-date').value||localDateString(),note,recurring,frequency,receipt};state.sharedPool-=amt;state.totalVolume+=amt;state.transactions.unshift(tx);addNotification(`${desc} recorded as ${money(amt)} under ${cat}. Paid by ${payer}.`,'expense');if(recurring)addNotification(`${desc} is marked as a ${frequency} recurring expense.`,'activity');closeModal('modal-add-expense');saveState();queueGoogleSync();renderDOM()}
-function renderTransaction(t){let icon='•',cls='settlement',amountClass='',badges=[];if(t.type==='expense'){icon='₹';cls='expense';amountClass='debit';badges=[t.category||'Expense',t.payer?`Paid by ${t.payer}`:''];}else if(t.type==='pool_refill'){icon='₹';cls='income';amountClass='credit';badges=[t.payer?`Added by ${t.payer}`:'Balance deposit'];}else badges=['Activity'];return `<div class="transaction-card" onclick="showTransaction(${t.id})"><div class="tx-icon-wrap ${cls}">${icon}</div><div class="tx-body"><div class="tx-title-line">${esc(t.description||'Transaction')}</div><div class="tx-date">${formatDate(t.date||localDateString())}</div><div class="tx-badges">${badges.filter(Boolean).map(b=>`<span class="tx-badge">${esc(b)}</span>`).join('')}</div></div><div class="tx-amount-block"><div class="tx-amount enhanced ${amountClass}">₹${Number(t.amount||0).toFixed(2)}</div></div></div>`}
-function showTransaction(id){const t=state.transactions.find(x=>x.id===id);if(!t)return;const body=document.getElementById('detail-body');body.innerHTML=`<div class="detail-amount">${money(t.amount)}</div><div class="detail-line"><span>Description</span><strong>${esc(t.description)}</strong></div><div class="detail-line"><span>Type</span><strong>${t.type==='expense'?'Expense':'Balance deposit'}</strong></div><div class="detail-line"><span>Date</span><strong>${formatDate(t.date)}</strong></div>${t.category?`<div class="detail-line"><span>Category</span><strong>${esc(t.category)}</strong></div>`:''}${t.payer?`<div class="detail-line"><span>${t.type==='expense'?'Paid by':'Added by'}</span><strong>${esc(t.payer)}</strong></div>`:''}${t.note?`<div class="detail-line"><span>Note</span><strong>${esc(t.note)}</strong></div>`:''}${t.recurring?`<div class="detail-line"><span>Recurring</span><strong>${esc(t.frequency||'Monthly')}</strong></div>`:''}${t.receipt?`<div class="detail-line" style="display:block"><span>Receipt</span><img src="${t.receipt}" style="display:block;max-width:100%;max-height:260px;margin-top:8px;border-radius:12px;object-fit:contain"></div>`:''}<div class="detail-actions">${t.type==='expense'?`<button class="btn-submit" onclick="closeModal('modal-details');editTransaction(${t.id})">Edit</button>`:''}<button class="btn-submit" style="background:var(--danger)" onclick="closeModal('modal-details');deleteTransaction(${t.id})">Delete</button></div>`;openModal('modal-details')}
-function editTransaction(id){const t=state.transactions.find(x=>x.id===id);if(!t||t.type!=='expense')return;document.getElementById('edit-id').value=id;document.getElementById('edit-desc').value=t.description||'';document.getElementById('edit-amount').value=t.amount||'';document.getElementById('edit-note').value=t.note||'';const sel=document.getElementById('edit-category');sel.innerHTML=categories.map(([e,n])=>`<option value="${esc(e+' '+n)}">${e} ${n}</option>`).join('');sel.value=t.category||categories[0][0]+' '+categories[0][1];const g=document.getElementById('edit-payer');g.querySelectorAll('button').forEach(b=>b.classList.toggle('selected',b.innerText===t.payer));openModal('modal-edit')}
-function saveEditedExpense(){const id=Number(document.getElementById('edit-id').value),t=state.transactions.find(x=>x.id===id);if(!t)return;const old=Number(t.amount),amt=parseFloat(document.getElementById('edit-amount').value);if(!Number.isFinite(amt)||amt<=0)return alert('Enter a valid amount.');t.description=document.getElementById('edit-desc').value.trim()||'Expense';t.amount=amt;t.category=document.getElementById('edit-category').value;t.payer=getToggleVal('edit-payer');t.note=document.getElementById('edit-note').value.trim();state.sharedPool+=old-amt;state.totalVolume+=amt-old;addNotification(`${t.description} was edited to ${money(amt)}.`,'activity');closeModal('modal-edit');saveState();queueGoogleSync();renderDOM()}
-function deleteTransaction(id){const t=state.transactions.find(x=>x.id===id);if(!t||!confirm(`Delete "${t.description}" for ${money(t.amount)}?`))return;addNotification(`${t.description} (${money(t.amount)}) was deleted.`,'delete');if(t.type==='expense'){state.sharedPool+=Number(t.amount);state.totalVolume=Math.max(0,state.totalVolume-Number(t.amount))}else if(t.type==='pool_refill')state.sharedPool=Math.max(0,state.sharedPool-Number(t.amount));state.transactions=state.transactions.filter(x=>x.id!==id);saveState();queueGoogleSync();renderDOM()}
+function submitAddFunds(){const amt=parseFloat(document.getElementById('input-fund-amount').value);if(!Number.isFinite(amt)||amt<=0)return alert('Enter a valid amount.');const by=getToggleVal('group-fund-payer');state.sharedPool+=amt;state.transactions.unshift({id:newTransactionId(),type:'pool_refill',description:'Balance Added',amount:amt,payer:by,meta:`${by} added to shared balance`,date:localDateString(),updatedAt:new Date().toISOString(),updatedBy:fmDeviceId});addNotification(`${by} added ${money(amt)} to the shared balance.`,'income');closeModal('modal-add-funds');saveState();queueGoogleSync();renderDOM()}
+async function submitExpense(){const desc=document.getElementById('input-exp-desc').value.trim()||'Expense',amt=parseFloat(document.getElementById('input-exp-amount').value);if(!Number.isFinite(amt)||amt<=0)return alert('Enter a valid amount.');const cat=document.getElementById('group-category').value||categories[categories.length-1][0]+' '+categories[categories.length-1][1],payer=getToggleVal('group-exp-payer'),note=document.getElementById('input-exp-note').value.trim(),recurring=document.getElementById('input-exp-recurring').checked,frequency=document.getElementById('recurring-frequency').value;let receipt='';const file=document.getElementById('input-exp-receipt').files?.[0];if(file){if(file.size>2*1024*1024)return alert('Receipt image must be smaller than 2 MB.');receipt=await new Promise(resolve=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>resolve('');r.readAsDataURL(file)})}const tx={id:newTransactionId(),type:'expense',description:desc,amount:amt,category:cat,payer,date:document.getElementById('input-exp-date').value||localDateString(),note,recurring,frequency,receipt,updatedAt:new Date().toISOString(),updatedBy:fmDeviceId};state.sharedPool-=amt;state.totalVolume+=amt;state.transactions.unshift(tx);addNotification(`${desc} recorded as ${money(amt)} under ${cat}. Paid by ${payer}.`,'expense');if(recurring)addNotification(`${desc} is marked as a ${frequency} recurring expense.`,'activity');closeModal('modal-add-expense');saveState();queueGoogleSync();renderDOM()}
+function renderTransaction(t){
+  let icon='•',cls='settlement',amountClass='',badges=[];
+  if(t.type==='expense'){icon='₹';cls='expense';amountClass='debit';badges=[t.category||'Expense',t.payer?`Paid by ${t.payer}`:''];}
+  else if(t.type==='pool_refill'){icon='₹';cls='income';amountClass='credit';badges=[t.payer?`Added by ${t.payer}`:'Balance deposit'];}
+  else badges=['Activity'];
+  const id=JSON.stringify(String(t.id));
+  return `<div class="transaction-card" onclick='showTransaction(${id})'><div class="tx-icon-wrap ${cls}">${icon}</div><div class="tx-body"><div class="tx-title-line">${esc(t.description||'Transaction')}</div><div class="tx-date">${formatDate(t.date||localDateString())}</div><div class="tx-badges">${badges.filter(Boolean).map(b=>`<span class="tx-badge">${esc(b)}</span>`).join('')}</div></div><div class="tx-amount-block"><div class="tx-amount enhanced ${amountClass}">₹${Number(t.amount||0).toFixed(2)}</div></div></div>`;
+}
+function showTransaction(id){
+  const key=transactionKey(id),t=state.transactions.find(x=>transactionKey(x.id)===key);
+  if(!t)return;
+  const body=document.getElementById('detail-body');
+  const safeId=JSON.stringify(key);
+  body.innerHTML=`<div class="detail-amount">${money(t.amount)}</div><div class="detail-line"><span>Description</span><strong>${esc(t.description)}</strong></div><div class="detail-line"><span>Type</span><strong>${t.type==='expense'?'Expense':'Balance deposit'}</strong></div><div class="detail-line"><span>Date</span><strong>${formatDate(t.date)}</strong></div>${t.category?`<div class="detail-line"><span>Category</span><strong>${esc(t.category)}</strong></div>`:''}${t.payer?`<div class="detail-line"><span>${t.type==='expense'?'Paid by':'Added by'}</span><strong>${esc(t.payer)}</strong></div>`:''}${t.note?`<div class="detail-line"><span>Note</span><strong>${esc(t.note)}</strong></div>`:''}${t.recurring?`<div class="detail-line"><span>Recurring</span><strong>${esc(t.frequency||'Monthly')}</strong></div>`:''}${t.receipt?`<div class="detail-line" style="display:block"><span>Receipt</span><img src="${t.receipt}" style="display:block;max-width:100%;max-height:260px;margin-top:8px;border-radius:12px;object-fit:contain"></div>`:''}<div class="detail-actions">${t.type==='expense'?`<button class="btn-submit" onclick='closeModal("modal-details");editTransaction(${safeId})'>Edit</button>`:''}<button class="btn-submit" style="background:var(--danger)" onclick='closeModal("modal-details");deleteTransaction(${safeId})'>Delete</button></div>`;
+  openModal('modal-details');
+}
+function editTransaction(id){
+  const key=transactionKey(id),t=state.transactions.find(x=>transactionKey(x.id)===key);
+  if(!t||t.type!=='expense')return;
+  document.getElementById('edit-id').value=key;
+  document.getElementById('edit-desc').value=t.description||'';
+  document.getElementById('edit-amount').value=t.amount||'';
+  document.getElementById('edit-note').value=t.note||'';
+  const sel=document.getElementById('edit-category');
+  sel.innerHTML=categories.map(([e,n])=>`<option value="${esc(e+' '+n)}">${e} ${n}</option>`).join('');
+  sel.value=t.category||categories[0][0]+' '+categories[0][1];
+  const g=document.getElementById('edit-payer');
+  g.querySelectorAll('button').forEach(btn=>btn.classList.toggle('selected',btn.innerText===t.payer));
+  openModal('modal-edit');
+}
+function saveEditedExpense(){
+  const id=transactionKey(document.getElementById('edit-id').value),t=state.transactions.find(x=>transactionKey(x.id)===id);
+  if(!t)return;
+  const old=Number(t.amount),amt=parseFloat(document.getElementById('edit-amount').value);
+  if(!Number.isFinite(amt)||amt<=0)return alert('Enter a valid amount.');
+  t.description=document.getElementById('edit-desc').value.trim()||'Expense';
+  t.amount=amt;
+  t.category=document.getElementById('edit-category').value;
+  t.payer=getToggleVal('edit-payer');
+  t.note=document.getElementById('edit-note').value.trim();
+  t.updatedAt=new Date().toISOString();
+  t.updatedBy=fmDeviceId;
+  state.sharedPool+=old-amt;
+  state.totalVolume+=amt-old;
+  addNotification(`${t.description} was edited to ${money(amt)}.`,'activity');
+  closeModal('modal-edit');
+  saveState();
+  queueGoogleSync({action:'upsert',transaction:t});
+  renderDOM();
+}
+function deleteTransaction(id){
+  const key=transactionKey(id),t=state.transactions.find(x=>transactionKey(x.id)===key);
+  if(!t||!confirm(`Delete "${t.description}" for ${money(t.amount)}?`))return;
+  addNotification(`${t.description} (${money(t.amount)}) was deleted.`,'delete');
+  if(t.type==='expense'){state.sharedPool+=Number(t.amount);state.totalVolume=Math.max(0,state.totalVolume-Number(t.amount))}
+  else if(t.type==='pool_refill')state.sharedPool=Math.max(0,state.sharedPool-Number(t.amount));
+  state.transactions=state.transactions.filter(x=>transactionKey(x.id)!==key);
+  saveState();
+  queueGoogleSync({action:'delete',transactionId:key,updatedAt:new Date().toISOString(),updatedBy:fmDeviceId});
+  renderDOM();
+}
 function updateStatementFilter(){const p=document.getElementById('statement-period').value;document.getElementById('custom-date-range').style.display=p==='custom'?'block':'none';statementFilter='all';renderDOM()}
 function cycleStatementFilter(){statementFilter=statementFilter==='all'?'expenses':statementFilter==='expenses'?'deposits':'all';document.getElementById('expense-filter').textContent=statementFilter==='all'?'All':statementFilter==='expenses'?'Expenses':'Deposits';renderDOM()}
 function periodMatch(t){const p=document.getElementById('statement-period')?.value||'all';if(p==='all')return true;const d=transactionDate(t),now=new Date(),today=new Date(now.getFullYear(),now.getMonth(),now.getDate());if(p==='week'){const diff=(today.getDay()+6)%7,start=new Date(today);start.setDate(today.getDate()-diff);const end=new Date(start);end.setDate(start.getDate()+6);return d>=start&&d<=end}if(p==='month')return d.getFullYear()===today.getFullYear()&&d.getMonth()===today.getMonth();if(p==='year')return d.getFullYear()===today.getFullYear();if(p==='custom'){const f=document.getElementById('statement-from')?.value||'',to=document.getElementById('statement-to')?.value||'';if(!f&&!to)return true;const from=f?new Date(f+'T00:00:00'):null,end=to?new Date(to+'T23:59:59.999'):null;return (!from||d>=from)&&(!end||d<=end)}return true}
@@ -989,8 +1086,8 @@ function categoryInfo(value){const raw=String(value||'Other').trim();const match
 function renderOverview(){const now=new Date(),rows=state.transactions.filter(t=>t.type==='expense'&&transactionDate(t).getFullYear()===now.getFullYear()&&transactionDate(t).getMonth()===now.getMonth()),total=rows.reduce((a,t)=>a+Number(t.amount||0),0);document.getElementById('overview-month-total').textContent=money(total);document.getElementById('overview-month-note').textContent=`${rows.length} expense${rows.length===1?'':'s'} recorded`;document.getElementById('overview-freedon').textContent=money(rows.filter(t=>t.payer==='Freedon').reduce((a,t)=>a+Number(t.amount||0),0));document.getElementById('overview-mishel').textContent=money(rows.filter(t=>t.payer==='Mishel').reduce((a,t)=>a+Number(t.amount||0),0));const map={};rows.forEach(t=>{const c=categoryInfo(t.category);map[c.name]=(map[c.name]||0)+Number(t.amount||0)});document.getElementById('overview-categories').innerHTML=Object.entries(map).sort((a,b)=>b[1]-a[1]).map(([name,v])=>{const c=categoryInfo(name);return `<div class="category-list-row"><div class="category-emoji" aria-hidden="true"><span class="category-emoji-glyph">${esc(c.emoji)}</span></div><div><strong>${esc(c.name)}</strong><small>${((v/total)*100||0).toFixed(0)}% of monthly spending</small></div><strong>${money(v)}</strong></div>`}).join('')||'<div class="empty-state">No expenses recorded this month.</div>';const biggest=[...rows].sort((a,b)=>b.amount-a.amount).slice(0,5);document.getElementById('overview-recent').innerHTML=biggest.map(t=>{const c=categoryInfo(t.category);return `<div class="overview-recent-row"><div><strong>${esc(t.description)}</strong><small>${esc(`${c.emoji} ${c.name}`)} • Paid by ${esc(t.payer||'Unknown')}</small></div><strong>${money(t.amount)}</strong></div>`}).join('')||'<div class="empty-state">No expenses recorded this month.</div>';drawMonthlyChart()}
 function drawMonthlyChart(){const c=document.getElementById('monthly-chart');if(!c)return;const rect=c.getBoundingClientRect(),dpr=devicePixelRatio||1,w=Math.max(280,rect.width),h=190;c.width=w*dpr;c.height=h*dpr;const ctx=c.getContext('2d');ctx.scale(dpr,dpr);ctx.clearRect(0,0,w,h);const vals=[],labels=[];for(let i=5;i>=0;i--){const d=new Date();d.setMonth(d.getMonth()-i,1);const v=state.transactions.filter(t=>t.type==='expense'&&transactionDate(t).getFullYear()===d.getFullYear()&&transactionDate(t).getMonth()===d.getMonth()).reduce((a,t)=>a+Number(t.amount||0),0);vals.push(v);labels.push(d.toLocaleDateString('en-IN',{month:'short'}))}const max=Math.max(1,...vals),left=24,right=10,top=14,bottom=28,chartH=h-top-bottom,barW=(w-left-right)/6-10;ctx.strokeStyle='#e4e9ef';ctx.lineWidth=1;for(let i=0;i<4;i++){const y=top+(chartH/3)*i;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(w-right,y);ctx.stroke()}vals.forEach((v,i)=>{const x=left+i*((w-left-right)/6)+5,bh=(v/max)*(chartH-5),y=top+chartH-bh;ctx.fillStyle='#4b8b83';ctx.beginPath();ctx.roundRect(x,y,barW,bh,8);ctx.fill();ctx.fillStyle='#718096';ctx.font='11px Inter';ctx.textAlign='center';ctx.fillText(labels[i],x+barW/2,h-9);if(v){ctx.fillStyle='#334155';ctx.font='10px Inter';ctx.fillText('₹'+Math.round(v),x+barW/2,Math.max(11,y-5))}})}
 function renderBudget(){const el=document.getElementById('budget-display'),bar=document.getElementById('budget-progress'),note=document.getElementById('budget-note');if(!el)return;const now=new Date(),spent=state.transactions.filter(t=>t.type==='expense'&&transactionDate(t).getFullYear()===now.getFullYear()&&transactionDate(t).getMonth()===now.getMonth()).reduce((a,t)=>a+Number(t.amount||0),0);el.textContent=settings.budget?money(settings.budget):'Not set';const pct=settings.budget?Math.min(100,spent/settings.budget*100):0;bar.style.width=pct+'%';note.textContent=settings.budget?`${money(spent)} spent • ${Math.max(0,settings.budget-spent).toFixed(2)} left this month`: 'Set a limit to track monthly spending.'}
-function setBudget(){const v=prompt('Set your monthly expense budget (₹):',settings.budget||'');if(v===null)return;const n=parseFloat(v);if(!Number.isFinite(n)||n<0)return alert('Enter a valid budget.');settings.budget=n;addNotification(`Monthly budget set to ${money(n)}.`);saveState();queueGoogleSync();renderDOM()}
-function toggleDarkMode(){settings.dark=!settings.dark;applyTheme();saveState();queueGoogleSync();renderDOM()}
+function setBudget(){const v=prompt('Set your monthly expense budget (₹):',settings.budget||'');if(v===null)return;const n=parseFloat(v);if(!Number.isFinite(n)||n<0)return alert('Enter a valid budget.');settings.budget=n;addNotification(`Monthly budget set to ${money(n)}.`);saveState();renderDOM()}
+function toggleDarkMode(){settings.dark=!settings.dark;applyTheme();saveState();renderDOM()}
 function applyTheme(){document.documentElement.classList.toggle('dark',!!settings.dark);const n=document.getElementById('theme-note');if(n)n.textContent=settings.dark?'Dark theme is on':'Light theme is on'}
 function backupData(){const blob=new Blob([JSON.stringify({state,settings,exportedAt:new Date().toISOString()},null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`FM_Tracker_Backup_${localDateString()}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),500);addNotification('A tracker backup was exported.');saveState();renderNotifications()}
 function restoreData(e){const file=e.target.files?.[0];if(!file)return;const r=new FileReader();r.onload=()=>{try{const data=JSON.parse(r.result);if(data.state)state=Object.assign(state,data.state);if(data.settings)settings=Object.assign(settings,data.settings);saveState();applyTheme();addNotification('Tracker data was restored from backup.');renderDOM();alert('Backup restored successfully.')}catch(err){if(badge){badge.textContent="Failed";badge.style.background="#ef4444";}alert('That backup file is not valid.')}};r.readAsText(file);e.target.value=''}
@@ -1004,7 +1101,19 @@ function exportStatementsPDF(){const rows=filteredRows(),w=window.open('','_blan
 function renderDOM(){const bal=document.getElementById('shared-pool-display');if(bal)bal.textContent=money(state.sharedPool);const today=localDateString(),te=state.transactions.filter(t=>t.type==='expense'&&(t.date||today)===today),todayTotal=te.reduce((a,t)=>a+Number(t.amount||0),0);document.getElementById('today-transacted-display').textContent=money(todayTotal);document.getElementById('today-expense-note').textContent=`${te.length} expense${te.length===1?'':'s'} recorded today`;const now=new Date(),me=state.transactions.filter(t=>t.type==='expense'&&transactionDate(t).getFullYear()===now.getFullYear()&&transactionDate(t).getMonth()===now.getMonth()),monthTotal=me.reduce((a,t)=>a+Number(t.amount||0),0);document.getElementById('month-expense-display').textContent=money(monthTotal);renderNotifications();const recent=state.transactions.slice(0,6);document.getElementById('recent-transactions-list').innerHTML=recent.map(renderTransaction).join('')||'<div class="empty-state">No transactions yet</div>';const rows=filteredRows(),tot=totals(rows);document.getElementById('statement-income').textContent=money(tot.deposit);document.getElementById('statement-expenses').textContent=money(tot.expense);document.getElementById('statement-count').textContent=String(rows.length);document.getElementById('ledger-list').innerHTML=rows.map(renderTransaction).join('')||'<div class="empty-state">No entries for this period</div>';renderOverview();renderBudget();applyTheme()}
 function populateEditCategories(){const s=document.getElementById('edit-category');if(s)s.innerHTML=categories.map(([e,n])=>`<option>${e} ${n}</option>`).join('')}
 if('serviceWorker' in navigator){window.addEventListener('load',()=>{const register=()=>navigator.serviceWorker.register('./sw.js').catch(()=>{});if('requestIdleCallback' in window)requestIdleCallback(register,{timeout:3000});else setTimeout(register,1200);})}
-window.addEventListener('resize',()=>{if(document.getElementById('view-overview')?.classList.contains('active'))drawMonthlyChart()});window.onload=()=>{populateEditCategories();loadState();initSyncStatus();if(settings.pin){const entered=prompt('Enter your F&M Tracker PIN');if(entered!==settings.pin){document.body.innerHTML='<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:30px;font-family:Inter,sans-serif;text-align:center"><div><h2>F&M Tracker Locked</h2><p style="color:#64748b;margin-top:8px">Reload and enter the correct PIN to continue.</p></div></div>';return}}};
+window.addEventListener('resize',()=>{if(document.getElementById('view-overview')?.classList.contains('active'))drawMonthlyChart()});window.onload=async()=>{
+  populateEditCategories();
+  loadState();
+  initSyncStatus();
+  if(settings.pin){
+    const entered=prompt('Enter your F&M Tracker PIN');
+    if(entered!==settings.pin){
+      document.body.innerHTML='<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;padding:30px;font-family:Inter,sans-serif;text-align:center"><div><h2>F&M Tracker Locked</h2><p style="color:#64748b;margin-top:8px">Reload and enter the correct PIN to continue.</p></div></div>';
+      return;
+    }
+  }
+  if(navigator.onLine)queueGoogleSync();
+};
 
 
 function initSyncStatus(){
@@ -1016,17 +1125,49 @@ function initSyncStatus(){
   if(status)status.textContent=saved?"Synced successfully":"Ready to sync";
   if(last)last.textContent=saved?"Last synced: "+saved:"Not synced yet";
 }
-
-
 let googleSyncTimer=null;
 let googleSyncInProgress=false;
-function queueGoogleSync(){
-  // Never delay a transaction/UI update for network activity.
+const GOOGLE_SYNC_URL="https://script.google.com/macros/s/AKfycbxQzExO5o4l4J8dxd6_2Dz6vyj70Ydncog12XyuxG5M2q0GdT7s73QPSAS_8FAVXFkI/exec";
+function getSyncQueue(){
+  try{const q=JSON.parse(localStorage.getItem(FM_SYNC_QUEUE_KEY)||'[]');return Array.isArray(q)?q:[];}catch(e){return [];}
+}
+function setSyncQueue(q){localStorage.setItem(FM_SYNC_QUEUE_KEY,JSON.stringify(q));}
+function queueGoogleSync(op=null){
+  if(op){
+    const q=getSyncQueue();
+    const key=op.action==='delete'?transactionKey(op.transactionId):transactionKey(op.transaction?.id);
+    const idx=q.findIndex(x=>(x.action==='delete'?transactionKey(x.transactionId):transactionKey(x.transaction?.id))===key);
+    if(idx>=0)q[idx]=op;else q.push(op);
+    setSyncQueue(q);
+  }
   if(!navigator.onLine)return;
   clearTimeout(googleSyncTimer);
-  googleSyncTimer=setTimeout(()=>syncToGoogleSheets(false),1200);
+  googleSyncTimer=setTimeout(()=>syncToGoogleSheets(false),800);
 }
-
+async function googleGetShared(){
+  const response=await fetch(GOOGLE_SYNC_URL+"?action=read&_="+Date.now(),{method:"GET",cache:"no-store"});
+  if(!response.ok)throw new Error("Google Sheets returned an error ("+response.status+")");
+  const data=await response.json();
+  if(!data||data.ok!==true||!Array.isArray(data.transactions))throw new Error(data?.error||"Invalid Google Sheets response");
+  return data.transactions;
+}
+async function googlePostOperation(op){
+  const response=await fetch(GOOGLE_SYNC_URL,{
+    method:"POST",
+    headers:{"Content-Type":"text/plain;charset=utf-8"},
+    body:JSON.stringify(op)
+  });
+  if(!response.ok)throw new Error("Google Sheets returned an error ("+response.status+")");
+  const data=await response.json().catch(()=>({ok:true}));
+  if(data&&data.ok===false)throw new Error(data.error||"Google Sheets rejected the change");
+  return data;
+}
+function applyCloudAuthoritative(cloudRows){
+  state.transactions=(Array.isArray(cloudRows)?cloudRows:[]).filter(t=>!t.deleted);
+  recomputeDerivedState();
+  saveState();
+  renderDOM();
+}
 async function syncToGoogleSheets(showMessage=true){
   if(googleSyncInProgress)return;
   googleSyncInProgress=true;
@@ -1034,31 +1175,44 @@ async function syncToGoogleSheets(showMessage=true){
   const status=document.getElementById("sync-status-text");
   const last=document.getElementById("last-sync-label");
   if(badge){badge.textContent="Syncing";badge.className="sync-status syncing";}
-  if(status)status.textContent="Syncing your latest transactions…";
+  if(status)status.textContent="Syncing shared transactions…";
   try{
-    if(typeof state==="undefined") return;
-    const response=await fetch("https://script.google.com/macros/s/AKfycbxQzExO5o4l4J8dxd6_2Dz6vyj70Ydncog12XyuxG5M2q0GdT7s73QPSAS_8FAVXFkI/exec",{
-      method:"POST",
-      headers:{"Content-Type":"text/plain;charset=utf-8"},
-      body:JSON.stringify({transactions:Array.isArray(state.transactions)?state.transactions:[]})
-    });
-    if(!response.ok) throw new Error("Google Sheets returned an error ("+response.status+")");
-    const resultText=await response.text();
+    // Read first. The complete local transaction array is never uploaded.
+    let cloud=await googleGetShared();
+    const queue=getSyncQueue();
+
+    if(queue.length){
+      for(const op of queue)await googlePostOperation(op);
+      setSyncQueue([]);
+      cloud=await googleGetShared();
+    }else{
+      // One-time migration: append local records that do not exist in the Sheet.
+      // Matching IDs are never uploaded, so a stale local copy cannot overwrite cloud data.
+      const cloudIds=new Set(cloud.map(t=>transactionKey(t.id)));
+      const localOnly=state.transactions.filter(t=>!cloudIds.has(transactionKey(t.id)));
+      for(const t of localOnly){
+        const migrated=Object.assign({},t,{updatedAt:t.updatedAt||new Date().toISOString(),updatedBy:fmDeviceId});
+        await googlePostOperation({action:"upsert",transaction:migrated});
+      }
+      if(localOnly.length)cloud=await googleGetShared();
+    }
+
+    applyCloudAuthoritative(cloud);
+
     const stamp=new Date().toLocaleString('en-IN',{hour:'numeric',minute:'2-digit',hour12:true,day:'2-digit',month:'2-digit',year:'numeric'});
     localStorage.setItem("fm_last_sync",stamp);
     if(badge){badge.textContent="Synced";badge.className="sync-status synced";}
-    if(status)status.textContent="Synced successfully";
+    if(status)status.textContent="Shared data synced";
     if(last)last.textContent="Last synced: "+stamp;
-    if(showMessage)alert("Google Sheets synced successfully\n\n"+resultText);
+    if(showMessage)alert("Google Sheets synced successfully\n\nShared transactions are up to date.");
   }catch(err){
-    if(badge){badge.textContent="Connected";badge.className="sync-status connected";}
+    if(badge){badge.textContent="Failed";badge.className="sync-status failed";}
     if(status)status.textContent="Sync unavailable — try again";
     if(last)last.textContent=localStorage.getItem("fm_last_sync")?"Last synced: "+localStorage.getItem("fm_last_sync"):"Not synced yet";
     if(showMessage)alert("Google Sheets sync failed\n\n"+(err?.message||err));
-  } finally {
-    googleSyncInProgress=false;
-  }
+  }finally{googleSyncInProgress=false;}
 }
+window.addEventListener('online',()=>queueGoogleSync());
 </script>
 </body>
 </html>
