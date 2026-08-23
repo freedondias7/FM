@@ -1,68 +1,73 @@
-const CACHE_NAME = 'fm-tracker-shell-v15-sync-fix';
+const CACHE_NAME = "fm-tracker-v20-google-sync-final";
 
 const APP_SHELL = [
-  './',
-  './index.html',
-  './manifest.json'
+  "./",
+  "./index.html",
+  "./manifest.json"
 ];
 
-self.addEventListener('install', event => {
+self.addEventListener("install", event => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(async cache => {
-      for (const url of APP_SHELL) {
-        try {
-          await cache.add(url);
-        } catch (_) {}
-      }
+    caches.open(CACHE_NAME)
+      .then(async cache => {
+        for (const url of APP_SHELL) {
+          try {
+            await cache.add(url);
+          } catch (_) {}
+        }
 
-      return self.skipWaiting();
-    })
+        await self.skipWaiting();
+      })
   );
 });
 
-self.addEventListener('activate', event => {
+
+self.addEventListener("activate", event => {
   event.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(
-        keys
-          .filter(key => key !== CACHE_NAME)
-          .map(key => caches.delete(key))
+    caches.keys()
+      .then(keys =>
+        Promise.all(
+          keys
+            .filter(key => key !== CACHE_NAME)
+            .map(key => caches.delete(key))
+        )
       )
-    ).then(() => self.clients.claim())
+      .then(() => self.clients.claim())
   );
 });
 
-self.addEventListener('fetch', event => {
-  const req = event.request;
 
-  // Only handle same-origin GET requests.
+self.addEventListener("fetch", event => {
+  const request = event.request;
+
+  // Only handle normal GET requests from this app.
+  // Google Apps Script requests must NOT be intercepted by the service worker.
   if (
-    req.method !== 'GET' ||
-    new URL(req.url).origin !== self.location.origin
+    request.method !== "GET" ||
+    new URL(request.url).origin !== self.location.origin
   ) {
     return;
   }
 
   event.respondWith(
-    caches.match(req).then(cached => {
+    fetch(request)
+      .then(response => {
 
-      const network = fetch(req)
-        .then(response => {
+        if (response && response.ok) {
 
-          if (response && response.ok) {
-            const copy = response.clone();
+          const copy = response.clone();
 
-            caches.open(CACHE_NAME)
-              .then(cache => cache.put(req, copy));
-          }
+          caches.open(CACHE_NAME)
+            .then(cache =>
+              cache.put(request, copy)
+            )
+            .catch(() => {});
+        }
 
-          return response;
-        })
-        .catch(() => cached);
-
-      // Keep the existing app behavior:
-      // cached app loads immediately, network refreshes cache.
-      return cached || network;
-    })
+        return response;
+      })
+      .catch(() =>
+        caches.match(request)
+      )
   );
 });
