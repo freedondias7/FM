@@ -1013,8 +1013,8 @@ function updateCategorySuggestion(){const input=document.getElementById('input-e
 function showManualCategory(){const box=document.getElementById('category-suggestion'),wrap=document.getElementById('manual-category-wrap'),btn=document.getElementById('change-category-btn');if(box){box.dataset.manual='true';box.hidden=true}if(wrap)wrap.style.display='block';if(btn)btn.style.display='none'}
 function toggleSmartCategories(enabled){settings.smartCategories=!!enabled;saveState();const note=document.getElementById('smart-category-note');if(note)note.textContent=enabled?'Suggestions are shown while you type':'Category suggestions are off';updateCategorySuggestion()}
 function quickCategory(label){const g=document.getElementById('group-category');if(g?.tagName==='SELECT'){g.value=label;return}const name=label.replace(/^\S+\s/,'');const target=[...g.querySelectorAll('.category-option')].find(b=>b.innerText.includes(name));if(target)selectToggle(target)}
-function submitAddFunds(){const amt=parseFloat(document.getElementById('input-fund-amount').value);if(!Number.isFinite(amt)||amt<=0)return alert('Enter a valid amount.');const by=getToggleVal('group-fund-payer');state.sharedPool+=amt;state.transactions.unshift({id:newTransactionId(),type:'pool_refill',description:'Balance Added',amount:amt,payer:by,meta:`${by} added to shared balance`,date:localDateString(),updatedAt:new Date().toISOString(),updatedBy:fmDeviceId});addNotification(`${by} added ${money(amt)} to the shared balance.`,'income');closeModal('modal-add-funds');saveState();queueGoogleSync();renderDOM()}
-async function submitExpense(){const desc=document.getElementById('input-exp-desc').value.trim()||'Expense',amt=parseFloat(document.getElementById('input-exp-amount').value);if(!Number.isFinite(amt)||amt<=0)return alert('Enter a valid amount.');const cat=document.getElementById('group-category').value||categories[categories.length-1][0]+' '+categories[categories.length-1][1],payer=getToggleVal('group-exp-payer'),note=document.getElementById('input-exp-note').value.trim(),recurring=document.getElementById('input-exp-recurring').checked,frequency=document.getElementById('recurring-frequency').value;let receipt='';const file=document.getElementById('input-exp-receipt').files?.[0];if(file){if(file.size>2*1024*1024)return alert('Receipt image must be smaller than 2 MB.');receipt=await new Promise(resolve=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>resolve('');r.readAsDataURL(file)})}const tx={id:newTransactionId(),type:'expense',description:desc,amount:amt,category:cat,payer,date:document.getElementById('input-exp-date').value||localDateString(),note,recurring,frequency,receipt,updatedAt:new Date().toISOString(),updatedBy:fmDeviceId};state.sharedPool-=amt;state.totalVolume+=amt;state.transactions.unshift(tx);addNotification(`${desc} recorded as ${money(amt)} under ${cat}. Paid by ${payer}.`,'expense');if(recurring)addNotification(`${desc} is marked as a ${frequency} recurring expense.`,'activity');closeModal('modal-add-expense');saveState();queueGoogleSync();renderDOM()}
+function submitAddFunds(){const amt=parseFloat(document.getElementById('input-fund-amount').value);if(!Number.isFinite(amt)||amt<=0)return alert('Enter a valid amount.');const by=getToggleVal('group-fund-payer');state.sharedPool+=amt;state.transactions.unshift({id:newTransactionId(),type:'pool_refill',description:'Balance Added',amount:amt,payer:by,meta:`${by} added to shared balance`,date:localDateString(),updatedAt:new Date().toISOString(),updatedBy:fmDeviceId});addNotification(`${by} added ${money(amt)} to the shared balance.`,'income');closeModal('modal-add-funds');saveState();queueGoogleSync({action:'upsert',transaction:state.transactions[0]});renderDOM()}
+async function submitExpense(){const desc=document.getElementById('input-exp-desc').value.trim()||'Expense',amt=parseFloat(document.getElementById('input-exp-amount').value);if(!Number.isFinite(amt)||amt<=0)return alert('Enter a valid amount.');const cat=document.getElementById('group-category').value||categories[categories.length-1][0]+' '+categories[categories.length-1][1],payer=getToggleVal('group-exp-payer'),note=document.getElementById('input-exp-note').value.trim(),recurring=document.getElementById('input-exp-recurring').checked,frequency=document.getElementById('recurring-frequency').value;let receipt='';const file=document.getElementById('input-exp-receipt').files?.[0];if(file){if(file.size>2*1024*1024)return alert('Receipt image must be smaller than 2 MB.');receipt=await new Promise(resolve=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=()=>resolve('');r.readAsDataURL(file)})}const tx={id:newTransactionId(),type:'expense',description:desc,amount:amt,category:cat,payer,date:document.getElementById('input-exp-date').value||localDateString(),note,recurring,frequency,receipt,updatedAt:new Date().toISOString(),updatedBy:fmDeviceId};state.sharedPool-=amt;state.totalVolume+=amt;state.transactions.unshift(tx);addNotification(`${desc} recorded as ${money(amt)} under ${cat}. Paid by ${payer}.`,'expense');if(recurring)addNotification(`${desc} is marked as a ${frequency} recurring expense.`,'activity');closeModal('modal-add-expense');saveState();queueGoogleSync({action:'upsert',transaction:tx});renderDOM()}
 function renderTransaction(t){
   let icon='•',cls='settlement',amountClass='',badges=[];
   if(t.type==='expense'){icon='₹';cls='expense';amountClass='debit';badges=[t.category||'Expense',t.payer?`Paid by ${t.payer}`:''];}
@@ -1121,98 +1121,604 @@ function initSyncStatus(){
   const status=document.getElementById("sync-status-text");
   const last=document.getElementById("last-sync-label");
   const saved=localStorage.getItem("fm_last_sync");
-  if(badge){badge.textContent=saved?"Synced":"Connected";badge.className="sync-status "+(saved?"synced":"connected");}
-  if(status)status.textContent=saved?"Synced successfully":"Ready to sync";
-  if(last)last.textContent=saved?"Last synced: "+saved:"Not synced yet";
+
+  if(badge){
+    badge.textContent=saved?"Synced":"Connected";
+    badge.className="sync-status "+(saved?"synced":"connected");
+  }
+
+  if(status){
+    status.textContent=saved?"Synced successfully":"Ready to sync";
+  }
+
+  if(last){
+    last.textContent=saved?
+      "Last synced: "+saved:
+      "Not synced yet";
+  }
 }
+
 let googleSyncTimer=null;
 let googleSyncInProgress=false;
+
 const GOOGLE_SYNC_URL="https://script.google.com/macros/s/AKfycbxQzExO5o4l4J8dxd6_2Dz6vyj70Ydncog12XyuxG5M2q0GdT7s73QPSAS_8FAVXFkI/exec";
+
+
 function getSyncQueue(){
-  try{const q=JSON.parse(localStorage.getItem(FM_SYNC_QUEUE_KEY)||'[]');return Array.isArray(q)?q:[];}catch(e){return [];}
-}
-function setSyncQueue(q){localStorage.setItem(FM_SYNC_QUEUE_KEY,JSON.stringify(q));}
-function queueGoogleSync(op=null){
-  if(op){
-    const q=getSyncQueue();
-    const key=op.action==='delete'?transactionKey(op.transactionId):transactionKey(op.transaction?.id);
-    const idx=q.findIndex(x=>(x.action==='delete'?transactionKey(x.transactionId):transactionKey(x.transaction?.id))===key);
-    if(idx>=0)q[idx]=op;else q.push(op);
-    setSyncQueue(q);
+  try{
+    const q=JSON.parse(
+      localStorage.getItem(FM_SYNC_QUEUE_KEY)||"[]"
+    );
+
+    return Array.isArray(q)?q:[];
+  }catch(e){
+    return [];
   }
+}
+
+
+function setSyncQueue(q){
+  localStorage.setItem(
+    FM_SYNC_QUEUE_KEY,
+    JSON.stringify(Array.isArray(q)?q:[])
+  );
+}
+
+
+function queueGoogleSync(op=null){
+
+  if(op){
+
+    const q=getSyncQueue();
+
+    const key=
+      op.action==='delete'
+        ? transactionKey(op.transactionId)
+        : transactionKey(op.transaction?.id);
+
+    if(key){
+
+      const idx=q.findIndex(x=>{
+        const xKey=
+          x.action==='delete'
+            ? transactionKey(x.transactionId)
+            : transactionKey(x.transaction?.id);
+
+        return xKey===key;
+      });
+
+      if(idx>=0){
+        q[idx]=op;
+      }else{
+        q.push(op);
+      }
+
+      setSyncQueue(q);
+    }
+  }
+
   if(!navigator.onLine)return;
+
   clearTimeout(googleSyncTimer);
-  googleSyncTimer=setTimeout(()=>syncToGoogleSheets(false),800);
+
+  googleSyncTimer=setTimeout(
+    ()=>syncToGoogleSheets(false),
+    op?500:800
+  );
 }
+
+
+/*
+ * Convert a Google Sheets date value into the YYYY-MM-DD format
+ * already used by the existing app.
+ *
+ * This is important: the app's UI expects t.date to be YYYY-MM-DD.
+ * We do not change the UI or transaction rendering.
+ */
+function normalizeCloudDate(value){
+
+  if(!value)return "";
+
+  const raw=String(value);
+
+  // Already YYYY-MM-DD.
+  const direct=raw.match(
+    /^(\d{4})-(\d{2})-(\d{2})/
+  );
+
+  if(direct){
+    return `${direct[1]}-${direct[2]}-${direct[3]}`;
+  }
+
+  const d=new Date(value);
+
+  if(isNaN(d.getTime())){
+    return "";
+  }
+
+  const y=d.getFullYear();
+  const m=String(d.getMonth()+1).padStart(2,"0");
+  const day=String(d.getDate()).padStart(2,"0");
+
+  return `${y}-${m}-${day}`;
+}
+
+
+/*
+ * Keep the transaction object in the exact shape the existing app uses.
+ * Google Sheets synchronization must not change how the rest of the app
+ * displays or calculates transactions.
+ */
+function normalizeCloudTransaction(t){
+
+  const tx=Object.assign({},t||{});
+
+  if(!tx.id){
+    tx.id=newTransactionId();
+  }
+
+  tx.id=String(tx.id);
+
+  tx.date=normalizeCloudDate(tx.date);
+
+  // The existing app uses "note", not "notes".
+  if(tx.note===undefined && tx.notes!==undefined){
+    tx.note=tx.notes;
+  }
+
+  if(tx.frequency===undefined &&
+     tx.recurringFrequency!==undefined){
+    tx.frequency=tx.recurringFrequency;
+  }
+
+  if(tx.recurring===undefined){
+    tx.recurring=false;
+  }
+
+  tx.amount=Number(tx.amount||0);
+
+  return tx;
+}
+
+
 async function googleGetShared(){
-  const response=await fetch(GOOGLE_SYNC_URL+"?action=read&_="+Date.now(),{method:"GET",cache:"no-store"});
-  if(!response.ok)throw new Error("Google Sheets returned an error ("+response.status+")");
+
+  const response=await fetch(
+    GOOGLE_SYNC_URL+
+    "?action=read&_="+Date.now(),
+    {
+      method:"GET",
+      cache:"no-store"
+    }
+  );
+
+  if(!response.ok){
+    throw new Error(
+      "Google Sheets returned an error ("+
+      response.status+
+      ")"
+    );
+  }
+
   const data=await response.json();
-  if(!data||data.ok!==true||!Array.isArray(data.transactions))throw new Error(data?.error||"Invalid Google Sheets response");
-  return data.transactions;
+
+  if(
+    !data ||
+    data.success!==true ||
+    !Array.isArray(data.transactions)
+  ){
+    throw new Error(
+      data?.error ||
+      "Invalid Google Sheets response"
+    );
+  }
+
+  return data.transactions.map(
+    normalizeCloudTransaction
+  );
 }
+
+
 async function googlePostOperation(op){
-  const response=await fetch(GOOGLE_SYNC_URL,{
-    method:"POST",
-    headers:{"Content-Type":"text/plain;charset=utf-8"},
-    body:JSON.stringify(op)
-  });
-  if(!response.ok)throw new Error("Google Sheets returned an error ("+response.status+")");
-  const data=await response.json().catch(()=>({ok:true}));
-  if(data&&data.ok===false)throw new Error(data.error||"Google Sheets rejected the change");
+
+  const response=await fetch(
+    GOOGLE_SYNC_URL,
+    {
+      method:"POST",
+      headers:{
+        "Content-Type":
+          "text/plain;charset=utf-8"
+      },
+      body:JSON.stringify(op)
+    }
+  );
+
+  if(!response.ok){
+    throw new Error(
+      "Google Sheets returned an error ("+
+      response.status+
+      ")"
+    );
+  }
+
+  const data=await response.json();
+
+  if(!data || data.success!==true){
+    throw new Error(
+      data?.error ||
+      "Google Sheets rejected the change"
+    );
+  }
+
   return data;
 }
+
+
+/*
+ * Merge cloud records with local records that have not yet been
+ * uploaded. Cloud remains authoritative for IDs that already exist
+ * in the Sheet.
+ */
+/*
+ * Merge Google Sheets records into the existing local transaction list.
+ *
+ * Rules:
+ * 1. Match records by Transaction ID.
+ * 2. A cloud record replaces the local version of the same ID.
+ * 3. A cloud tombstone removes the matching local record.
+ * 4. Local records that are not in the cloud are preserved. These are
+ *    normally records that are still waiting in the sync queue.
+ * 5. The final list remains newest-first, matching the existing UI.
+ */
+function mergeCloudAndLocal(cloudRows){
+
+  const cloudRowsSafe=
+    Array.isArray(cloudRows)
+      ? cloudRows
+      : [];
+
+  const local=
+    Array.isArray(state.transactions)
+      ? state.transactions
+          .map(normalizeCloudTransaction)
+      : [];
+
+  const localById=new Map(
+    local.map(t=>[
+      transactionKey(t.id),
+      t
+    ])
+  );
+
+  const tombstones=new Set();
+  const cloudById=new Map();
+
+  cloudRowsSafe.forEach(raw=>{
+    const id=transactionKey(raw?.id);
+    if(!id)return;
+
+    if(raw.deleted===true){
+      tombstones.add(id);
+      cloudById.delete(id);
+      return;
+    }
+
+    const normalized=normalizeCloudTransaction(raw);
+    cloudById.set(id,normalized);
+  });
+
+  /*
+   * Cloud wins for IDs it contains.
+   * Tombstones explicitly remove IDs.
+   */
+  const merged=[];
+
+  cloudById.forEach((cloudTx,id)=>{
+    if(!tombstones.has(id)){
+      merged.push(cloudTx);
+    }
+  });
+
+  /*
+   * Preserve local-only records — but ONLY when there is a genuine
+   * pending "upsert" operation still sitting in the sync queue for
+   * that ID. A local record missing from the cloud with NO pending
+   * operation is normally a transaction someone else already deleted
+   * (a tombstone this device hasn't fetched relative to yet, or one
+   * that's about to arrive). Auto-uploading it would resurrect a
+   * deleted transaction, so it must be dropped instead.
+   */
+  const pendingUpsertIds=new Set(
+    getSyncQueue()
+      .filter(op=>op.action==='upsert')
+      .map(op=>transactionKey(op.transaction?.id))
+      .filter(Boolean)
+  );
+
+  localById.forEach((localTx,id)=>{
+    if(
+      !cloudById.has(id) &&
+      !tombstones.has(id) &&
+      pendingUpsertIds.has(id)
+    ){
+      merged.push(localTx);
+    }
+  });
+
+  /*
+   * Keep the existing app's newest-first convention.
+   * Prefer transaction date, then Updated At, then leave equal records
+   * in their current relative order.
+   */
+  return merged
+    .map((t,index)=>({t,index}))
+    .sort((a,b)=>{
+      const ad=normalizeCloudDate(a.t.date);
+      const bd=normalizeCloudDate(b.t.date);
+
+      if(ad!==bd){
+        return bd.localeCompare(ad);
+      }
+
+      const au=String(a.t.updatedAt||"");
+      const bu=String(b.t.updatedAt||"");
+
+      if(au!==bu){
+        return bu.localeCompare(au);
+      }
+
+      return a.index-b.index;
+    })
+    .map(x=>x.t);
+}
+
+
 function applyCloudAuthoritative(cloudRows){
-  state.transactions=(Array.isArray(cloudRows)?cloudRows:[]).filter(t=>!t.deleted);
+
+  /*
+   * Do NOT assign Google Sheets data directly to state.transactions.
+   * Merge by ID so pending local records survive and cloud tombstones
+   * are respected.
+   */
+  state.transactions=mergeCloudAndLocal(cloudRows);
+
+  /*
+   * Keep all existing app calculations and rendering exactly as before.
+   */
   recomputeDerivedState();
   saveState();
   renderDOM();
 }
+
+
 async function syncToGoogleSheets(showMessage=true){
-  if(googleSyncInProgress)return;
+
+  if(googleSyncInProgress){
+    return false;
+  }
+
   googleSyncInProgress=true;
-  const badge=document.getElementById("sync-status-badge");
-  const status=document.getElementById("sync-status-text");
-  const last=document.getElementById("last-sync-label");
-  if(badge){badge.textContent="Syncing";badge.className="sync-status syncing";}
-  if(status)status.textContent="Syncing shared transactions…";
+
+  const badge=
+    document.getElementById(
+      "sync-status-badge"
+    );
+
+  const status=
+    document.getElementById(
+      "sync-status-text"
+    );
+
+  const last=
+    document.getElementById(
+      "last-sync-label"
+    );
+
+
+  if(badge){
+    badge.textContent="Syncing";
+    badge.className="sync-status syncing";
+  }
+
+  if(status){
+    status.textContent=
+      "Syncing shared transactions…";
+  }
+
+
   try{
-    // Read first. The complete local transaction array is never uploaded.
-    let cloud=await googleGetShared();
-    const queue=getSyncQueue();
+
+    /*
+     * STEP 1:
+     * Read the shared Sheet first.
+     */
+    let cloud=
+      await googleGetShared();
+
+
+    /*
+     * STEP 2:
+     * Send ONLY queued record-level changes.
+     */
+    let queue=getSyncQueue();
+
+    /*
+     * IMPORTANT — do NOT auto-upload "local only" transactions here.
+     * Absence from the Sheet is not evidence a transaction should be
+     * uploaded: it is frequently a transaction someone else already
+     * deleted (a tombstone). Only records with an explicit queued
+     * operation are ever sent to Google Sheets. See mergeCloudAndLocal
+     * for the matching read-side rule.
+     */
+    let syncHadFailures=false;
 
     if(queue.length){
-      for(const op of queue)await googlePostOperation(op);
-      setSyncQueue([]);
-      cloud=await googleGetShared();
-    }else{
-      // One-time migration: append local records that do not exist in the Sheet.
-      // Matching IDs are never uploaded, so a stale local copy cannot overwrite cloud data.
-      const cloudIds=new Set(cloud.map(t=>transactionKey(t.id)));
-      const localOnly=state.transactions.filter(t=>!cloudIds.has(transactionKey(t.id)));
-      for(const t of localOnly){
-        const migrated=Object.assign({},t,{updatedAt:t.updatedAt||new Date().toISOString(),updatedBy:fmDeviceId});
-        await googlePostOperation({action:"upsert",transaction:migrated});
+
+      for(const op of queue){
+
+        let result;
+
+        try{
+          result=await googlePostOperation(op);
+        }catch(err){
+          /*
+           * Leave this op queued and keep going with the rest of the
+           * queue. We'll report the failure after the loop.
+           */
+          syncHadFailures=true;
+          continue;
+        }
+
+        /*
+         * For deletes, only treat the operation as synced if Apps
+         * Script actually confirms the tombstone was written. A
+         * success:true envelope alone is not enough — we need
+         * deleted===true before we drop it from the queue.
+         */
+        if(op.action==='delete' && result?.deleted!==true){
+          syncHadFailures=true;
+          continue;
+        }
+
+        /*
+         * Remove only the operation that
+         * successfully reached Google Sheets.
+         */
+        const id=
+          op.action==='delete'
+            ? transactionKey(op.transactionId)
+            : transactionKey(op.transaction?.id);
+
+        const remaining=
+          getSyncQueue().filter(x=>{
+
+            const xId=
+              x.action==='delete'
+                ? transactionKey(x.transactionId)
+                : transactionKey(x.transaction?.id);
+
+            return xId!==id;
+          });
+
+        setSyncQueue(remaining);
       }
-      if(localOnly.length)cloud=await googleGetShared();
+
+      cloud=
+        await googleGetShared();
+
     }
 
+
+    /*
+     * STEP 3:
+     * Google Sheets is now the source of truth.
+     *
+     * IMPORTANT:
+     * Do not replace valid app transaction fields
+     * with Google Sheets column names.
+     */
     applyCloudAuthoritative(cloud);
 
-    const stamp=new Date().toLocaleString('en-IN',{hour:'numeric',minute:'2-digit',hour12:true,day:'2-digit',month:'2-digit',year:'numeric'});
-    localStorage.setItem("fm_last_sync",stamp);
-    if(badge){badge.textContent="Synced";badge.className="sync-status synced";}
-    if(status)status.textContent="Shared data synced";
-    if(last)last.textContent="Last synced: "+stamp;
-    if(showMessage)alert("Google Sheets synced successfully\n\nShared transactions are up to date.");
+    if(syncHadFailures){
+      throw new Error(
+        "Some changes could not be confirmed by Google Sheets "+
+        "and remain queued for the next sync."
+      );
+    }
+
+
+    const stamp=
+      new Date().toLocaleString(
+        'en-IN',
+        {
+          hour:'numeric',
+          minute:'2-digit',
+          hour12:true,
+          day:'2-digit',
+          month:'2-digit',
+          year:'numeric'
+        }
+      );
+
+    localStorage.setItem(
+      "fm_last_sync",
+      stamp
+    );
+
+
+    if(badge){
+      badge.textContent="Synced";
+      badge.className=
+        "sync-status synced";
+    }
+
+    if(status){
+      status.textContent=
+        "Shared data synced";
+    }
+
+    if(last){
+      last.textContent=
+        "Last synced: "+stamp;
+    }
+
+
+    if(showMessage){
+      alert(
+        "Google Sheets synced successfully\n\n"+
+        "Shared transactions are up to date."
+      );
+    }
+
+    return true;
+
+
   }catch(err){
-    if(badge){badge.textContent="Failed";badge.className="sync-status failed";}
-    if(status)status.textContent="Sync unavailable — try again";
-    if(last)last.textContent=localStorage.getItem("fm_last_sync")?"Last synced: "+localStorage.getItem("fm_last_sync"):"Not synced yet";
-    if(showMessage)alert("Google Sheets sync failed\n\n"+(err?.message||err));
-  }finally{googleSyncInProgress=false;}
+
+    if(badge){
+      badge.textContent="Failed";
+      badge.className=
+        "sync-status failed";
+    }
+
+    if(status){
+      status.textContent=
+        "Sync unavailable — try again";
+    }
+
+    if(last){
+      const saved=
+        localStorage.getItem(
+          "fm_last_sync"
+        );
+
+      last.textContent=
+        saved
+          ? "Last synced: "+saved
+          : "Not synced yet";
+    }
+
+
+    if(showMessage){
+      alert(
+        "Google Sheets sync failed\n\n"+
+        (err?.message||err)
+      );
+    }
+
+    return false;
+
+  }finally{
+
+    googleSyncInProgress=false;
+  }
 }
-window.addEventListener('online',()=>queueGoogleSync());
+
+
+window.addEventListener(
+  'online',
+  ()=>queueGoogleSync()
+);
 </script>
 </body>
 </html>
