@@ -1113,7 +1113,46 @@ window.addEventListener('resize',()=>{if(document.getElementById('view-overview'
     }
   }
   if(navigator.onLine)queueGoogleSync();
+  startGooglePolling();
 };
+
+/*
+ * Live cross-device updates: while this tab is open and visible,
+ * quietly re-sync on an interval so a transaction added on another
+ * device shows up here without anyone tapping "Sync Now". This does
+ * not change what a sync does — it only decides when one happens.
+ */
+let googlePollTimer=null;
+const GOOGLE_POLL_INTERVAL_MS=10000;
+
+function startGooglePolling(){
+  stopGooglePolling();
+  googlePollTimer=setInterval(()=>{
+    if(
+      document.visibilityState==='visible' &&
+      navigator.onLine &&
+      !googleSyncInProgress
+    ){
+      syncToGoogleSheets(false);
+    }
+  },GOOGLE_POLL_INTERVAL_MS);
+}
+
+function stopGooglePolling(){
+  if(googlePollTimer){
+    clearInterval(googlePollTimer);
+    googlePollTimer=null;
+  }
+}
+
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'){
+    if(navigator.onLine)queueGoogleSync();
+    startGooglePolling();
+  }else{
+    stopGooglePolling();
+  }
+});
 
 
 function initSyncStatus(){
