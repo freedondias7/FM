@@ -1320,9 +1320,45 @@ function normalizeCloudTransaction(t){
 }
 
 
+/*
+ * Google Apps Script requests can occasionally stall (cold start,
+ * flaky mobile network, etc). Without a timeout, a stalled fetch()
+ * never resolves or rejects, so the sync stays on "Syncing" forever
+ * and blocks every later automatic sync too (googleSyncInProgress
+ * never gets reset). This wraps fetch() with an AbortController so a
+ * stuck request fails after GOOGLE_SYNC_TIMEOUT_MS instead — letting
+ * the normal retry/poll logic pick it up on the next cycle.
+ */
+const GOOGLE_SYNC_TIMEOUT_MS=12000;
+
+async function fetchWithTimeout(url,options){
+  const controller=new AbortController();
+  const timer=setTimeout(
+    ()=>controller.abort(),
+    GOOGLE_SYNC_TIMEOUT_MS
+  );
+
+  try{
+    return await fetch(
+      url,
+      Object.assign({},options,{signal:controller.signal})
+    );
+  }catch(err){
+    if(err && err.name==='AbortError'){
+      throw new Error(
+        "Google Sheets took too long to respond"
+      );
+    }
+    throw err;
+  }finally{
+    clearTimeout(timer);
+  }
+}
+
+
 async function googleGetShared(){
 
-  const response=await fetch(
+  const response=await fetchWithTimeout(
     GOOGLE_SYNC_URL+
     "?action=read&_="+Date.now(),
     {
@@ -1360,7 +1396,7 @@ async function googleGetShared(){
 
 async function googlePostOperation(op){
 
-  const response=await fetch(
+  const response=await fetchWithTimeout(
     GOOGLE_SYNC_URL,
     {
       method:"POST",
