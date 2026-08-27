@@ -1321,21 +1321,21 @@ function normalizeCloudTransaction(t){
 
 
 /*
- * Google Apps Script requests can occasionally stall (cold start,
- * flaky mobile network, etc). Without a timeout, a stalled fetch()
- * never resolves or rejects, so the sync stays on "Syncing" forever
- * and blocks every later automatic sync too (googleSyncInProgress
- * never gets reset). This wraps fetch() with an AbortController so a
- * stuck request fails after GOOGLE_SYNC_TIMEOUT_MS instead — letting
- * the normal retry/poll logic pick it up on the next cycle.
+ * Neither fetch() call below had a timeout, which meant that if a
+ * request stalled (most commonly right after a cold app launch,
+ * before the phone's network connection has fully settled) the
+ * promise would hang indefinitely — leaving the sync badge stuck on
+ * "Syncing" with nothing to recover it until the next manual tap.
+ * This wraps fetch with a hard cutoff so a stalled request fails
+ * fast and the sync (or the next 10s poll) can retry cleanly.
  */
-const GOOGLE_SYNC_TIMEOUT_MS=12000;
+async function fetchWithTimeout(url,options,timeoutMs=15000){
 
-async function fetchWithTimeout(url,options){
   const controller=new AbortController();
+
   const timer=setTimeout(
     ()=>controller.abort(),
-    GOOGLE_SYNC_TIMEOUT_MS
+    timeoutMs
   );
 
   try{
@@ -1344,9 +1344,9 @@ async function fetchWithTimeout(url,options){
       Object.assign({},options,{signal:controller.signal})
     );
   }catch(err){
-    if(err && err.name==='AbortError'){
+    if(err?.name==='AbortError'){
       throw new Error(
-        "Google Sheets took too long to respond"
+        "Google Sheets request timed out"
       );
     }
     throw err;
@@ -1396,6 +1396,13 @@ async function googleGetShared(){
 
 async function googlePostOperation(op){
 
+  /*
+   * doPost() in Code.gs uses LockService.waitLock(30000), so a
+   * legitimate write can take close to 30s if it's waiting behind
+   * another device's operation. Give this more headroom than the
+   * read timeout so we don't abort a request that would have
+   * succeeded.
+   */
   const response=await fetchWithTimeout(
     GOOGLE_SYNC_URL,
     {
@@ -1405,7 +1412,8 @@ async function googlePostOperation(op){
           "text/plain;charset=utf-8"
       },
       body:JSON.stringify(op)
-    }
+    },
+    32000
   );
 
   if(!response.ok){
